@@ -389,14 +389,37 @@ class SimpleSALTPopulation(BasePopulation):
         return self._rng
 
 class GMM_SALTPopulation(SimpleSALTPopulation):
-    
+
     def __init__(self, zSamples, rng, snids=None, alphaTripp=0.11, betaTripp=3.14,
                  cSigma=0.1, x1Sigma=1.0, meanMB=-19.3, Mdisp=0.15,
                  cosmo=Planck15, mjdmin=59580., surveyDuration=10.):
-        super().__init__(zSamples, rng, snids=None, alphaTripp=0.11, betaTripp=3.14,
-                         cSigma=0.1, x1Sigma=1.0, meanMB=-19.3, Mdisp=0.15,
-                         cosmo=Planck15, mjdmin=59580., surveyDuration=10.)
+        super().__init__(dist=None, zSamples=zSamples, rng=rng, snids=snids,
+                         alphaTripp=alphaTripp, betaTripp=betaTripp,
+                         cSigma=cSigma, x1Sigma=x1Sigma, meanMB=meanMB, Mdisp=Mdisp,
+                         cosmo=cosmo, mjdmin=mjdmin, surveyDuration=surveyDuration)
 
+    @classmethod
+    def fromSkyArea(cls, rng, snids=None, alpha=2.6e-5, beta=1.5,
+                    alphaTripp=0.11, betaTripp=3.14,
+                    cSigma=0.1, x1Sigma=1.0, meanMB=-19.3, Mdisp=0.1,
+                    cosmo=Planck15, mjdmin=59580., surveyDuration=10.,
+                    fieldArea=10., skyFraction=None, zmax=1.4, zmin=1.0e-8,
+                    numzBins=20):
+        """
+        Class method to use either FieldArea or skyFraction and zbins
+        (zmin, zmax, numzins) to obtain the correct number of zSamples.
+        """
+        pl = PowerLawRates(rng=rng, cosmo=cosmo,
+                           alpha_rate=alpha, beta_rate=beta,
+                           zlower=zmin, zhigher=zmax, num_bins=numzBins, zbin_edges=None,
+                           survey_duration=surveyDuration, sky_area=fieldArea,
+                           sky_fraction=skyFraction)
+
+        cl = cls(pl.z_samples, rng=rng, snids=snids, alphaTripp=alphaTripp,
+                 betaTripp=betaTripp, cSigma=cSigma, x1Sigma=x1Sigma,
+                 meanMB=meanMB, Mdisp=Mdisp, cosmo=cosmo, mjdmin=mjdmin,
+                 surveyDuration=surveyDuration)
+        return cl
 
     @property
     def h70cosmo(self):
@@ -410,7 +433,7 @@ class GMM_SALTPopulation(SimpleSALTPopulation):
             timescale = self.mjdmax - self.mjdmin
             T0Vals = self.rng_model.uniform(size=self.numSources) * timescale \
                     + self.mjdmin
-            mBB, x1, c, m = SALT2_MMDist(self.numSources)
+            mBB, x1, c, m = SALT2_MMDist(self.numSources, rng=self.rng_model)
             mBB += self.h70cosmo.distmod(self.zSamples).value
             # cvals = self.rng_model.normal(loc=0., scale=self.cSigma,
             #                              size=self.numSources)

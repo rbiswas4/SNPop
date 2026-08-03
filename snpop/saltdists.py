@@ -6,20 +6,6 @@ __all__ = ['SALT2_MMDist', 'SALT2_SK16', 'sample_SALT2_SK16_hybrid']
 import numpy as np
 from tdaspop import double_gaussian, double_gaussian_pdf
 
-def double_gauss(mu, sigp, sigm, size):
-    """Double Gaussian distribution. Note: mu is the mode and not the mean."""
-    
-    sigm = abs(sigm) # Just in case
-
-    # probability of one side is proportional to sigma on that side
-    p = np.array([sigp, sigm], dtype=np.float64) # normalize
-    p /= sum(p)
-
-
-    sig = np.random.choice([sigp, -sigm], size = size, replace = True, p = p)
-    
-    return abs(np.random.normal(size = size))*sig + mu
-
 def  sample_SALT2_SK16_hybrid(num_sn, model1, model2, probs=[0.5, 0.5],
                               rng=np.random.RandomState(1)):
     """
@@ -182,7 +168,7 @@ class SALT2_SK16(object):
 
 
 
-def SALT2_MMDist(numSN,
+def SALT2_MMDist(numSN, rng=None,
                  cm=-0.0474801042369, cs1=0.0965032273527, cs2=0.042844366359,
                  x1m=0.872727291354, x1s1=0.358731835038, x1s2=1.42806797468,
                  mm=10.701690617, ms1=0.334359086569, ms2=1.0750402101,
@@ -195,11 +181,23 @@ def SALT2_MMDist(numSN,
     added to it.
 
     From D. Rubin
-    """
-    color = double_gauss(cm, cs1, cs2, size=numSN)
-    x1 = double_gauss(x1m, x1s1, x1s2, size=numSN)
-    mass = double_gauss(mm, ms1, ms2, size=numSN)
 
-    mB = mBm + mc * (mass > 10.) + cc * color + cx1 * x1
+    Parameters
+    ----------
+    numSN : int
+        number of SN parameter sets to draw
+    rng : instance of `np.random.RandomState`, defaults to `None`
+        random state used to draw samples. If `None`, a new
+        `np.random.RandomState` is created and the draw is not reproducible
+        across calls.
+    """
+    if rng is None:
+        rng = np.random.RandomState()
+
+    color = double_gaussian(mode=cm, sigmam=cs2, sigmap=cs1, size=numSN, rng=rng)
+    x1 = double_gaussian(mode=x1m, sigmam=x1s2, sigmap=x1s1, size=numSN, rng=rng)
+    mass = double_gaussian(mode=mm, sigmam=ms2, sigmap=ms1, size=numSN, rng=rng)
+
+    mB = mBm + mc * (mass > mt) + cc * color + cx1 * x1
 
     return mB, x1, color, mass
