@@ -2,9 +2,11 @@
 Module related to details of SALT distributions
 """
 from __future__ import absolute_import, print_function
-__all__ = ['SALT2_MMDist', 'SALT2_SK16', 'sample_SALT2_SK16_hybrid']
+__all__ = ['SALT2_MMDist', 'SALT2_SK16', 'sample_SALT2_SK16_hybrid',
+          'Nicolas21DriftingStretch', 'Nicolas21AsymmetricStretch']
 import numpy as np
-from tdaspop import double_gaussian, double_gaussian_pdf
+from scipy.stats import norm
+from tdaspop import double_gaussian, double_gaussian_pdf, GMMSampler
 
 def  sample_SALT2_SK16_hybrid(num_sn, model1, model2, probs=[0.5, 0.5],
                               rng=np.random.RandomState(1)):
@@ -201,3 +203,199 @@ def SALT2_MMDist(numSN, rng=None,
     mB = mBm + mc * (mass > mt) + cc * color + cx1 * x1
 
     return mB, x1, color, mass
+
+
+class Nicolas21DriftingStretch(object):
+    """
+    Model for the redshift evolution of the SALT2 stretch (x1) distribution
+    of SNe Ia from Nicolas et al. 2021, A&A 649, A74 (arXiv:2005.09441),
+    Eqs. 1 and 2.
+
+    The underlying stretch distribution is a mixture of a young population
+    with a single high-stretch Gaussian mode, and an old population that
+    shares that same mode plus an exclusive low-stretch mode (Eq. 2). The
+    fraction of young SNe Ia evolves with redshift following the specific
+    star formation rate (Eq. 1).
+
+    Parameters
+    ----------
+    K : float, defaults to 0.87
+        normalization of the young-fraction evolution (Eq. 1)
+    mu1, sigma1 : float
+        mean and standard deviation of the high-stretch mode shared by the
+        young and old populations
+    mu2, sigma2 : float
+        mean and standard deviation of the low-stretch mode exclusive to
+        the old population
+    a : float
+        weight of the high-stretch mode within the old population
+    """
+    def __init__(self, K=0.87, mu1=0.37, sigma1=0.61, mu2=-1.22, sigma2=0.56,
+                 a=0.51):
+        self.K = K
+        self.mu1 = mu1
+        self.sigma1 = sigma1
+        self.mu2 = mu2
+        self.sigma2 = sigma2
+        self.a = a
+
+    @classmethod
+    def from_sample(cls, sample_name='fiducial'):
+        """
+        Best-fit parameters from Table 2 of Nicolas et al. 2021 for the
+        base drifting stretch model (Eq. 2).
+
+        Parameters
+        ----------
+        sample_name : {'fiducial', 'conservative', 'snfactory'}
+        """
+        name = sample_name.lower()
+        if name == 'fiducial':
+            mu1, sigma1, mu2, sigma2, a = 0.37, 0.61, -1.22, 0.56, 0.51
+        elif name == 'conservative':
+            mu1, sigma1, mu2, sigma2, a = 0.38, 0.60, -1.26, 0.53, 0.47
+        elif name == 'snfactory':
+            mu1, sigma1, mu2, sigma2, a = 0.41, 0.55, -1.38, 0.44, 0.48
+        else:
+            raise NotImplementedError(f'sample_name {sample_name} not implemented')
+        return cls(K=0.87, mu1=mu1, sigma1=sigma1, mu2=mu2, sigma2=sigma2, a=a)
+
+    def delta(self, z):
+        """
+        Fraction of young SNe Ia at redshift `z` (Eq. 1).
+        """
+        z = np.asarray(z, dtype=float)
+        return 1. / (self.K ** -1 * (1. + z) ** (-2.8) + 1.)
+
+    def weights(self, z):
+        """
+        Mixture weights (w1, w2) of the shared high-stretch mode and the
+        old-population-only low-stretch mode at redshift `z`, obtained by
+        collapsing Eq. 2 into an equivalent 2-component mixture:
+        w1 = delta(z) + (1 - delta(z)) * a, w2 = (1 - delta(z)) * (1 - a).
+        """
+        d = self.delta(z)
+        w1 = d + (1. - d) * self.a
+        w2 = (1. - d) * (1. - self.a)
+        return w1, w2
+
+    def pdf(self, x1, z):
+        """
+        Evaluate the pdf of Eq. 2 at stretch values `x1` and redshifts `z`.
+        """
+        w1, w2 = self.weights(z)
+        return (w1 * norm.pdf(x1, self.mu1, self.sigma1)
+                + w2 * norm.pdf(x1, self.mu2, self.sigma2))
+
+    def sample(self, z, rng=None):
+        """
+        Draw one stretch sample per input redshift from the mixture in
+        Eq. 2, using `tdaspop.GMMSampler` for the per-SN two-component
+        Gaussian mixture defined by `weights` at that SN's redshift.
+
+        Parameters
+        ----------
+        z : float or `np.ndarray`
+            redshift(s) at which to draw stretch samples
+        rng : `np.random.RandomState`, defaults to `None`
+            if `None`, a new `np.random.RandomState` is created and draws
+            are not reproducible across calls.
+
+        Returns
+        -------
+        x1 : float or `np.ndarray`
+            stretch sample(s), one per input redshift
+        """
+        if rng is None:
+            rng = np.random.RandomState()
+
+        zarr = np.asarray(z, dtype=float)
+        scalar_input = zarr.ndim == 0
+        zvals = np.atleast_1d(zarr)
+
+        means = np.array([[self.mu1], [self.mu2]])
+        covariances = np.array([[[self.sigma1 ** 2]], [[self.sigma2 ** 2]]])
+
+        x1 = np.zeros(len(zvals))
+        for i, zi in enumerate(zvals):
+            w1, w2 = self.weights(zi)
+            sampler = GMMSampler(weights=[w1, w2], means=means,
+                                 covariances=covariances)
+            X, _ = sampler.sample(size=1, rng=rng)
+            x1[i] = X[0, 0]
+
+        return x1[0] if scalar_input else x1
+
+
+class Nicolas21AsymmetricStretch(object):
+    """
+    Per-survey asymmetric Gaussian model of the SALT2 stretch (x1)
+    distribution, from Table 4 of Nicolas et al. 2021, A&A 649, A74
+    (arXiv:2005.09441).
+
+    Note: the paper's own model comparison (their Table 3 / Fig. 7) finds
+    this redshift-independent, sample-based model a significantly worse
+    description of the data than the drifting mixture model of Eq. 2
+    (`Nicolas21DriftingStretch`); it is provided here as it was fit and
+    reported per survey in Table 4.
+
+    Parameters
+    ----------
+    mu0 : float
+        mode of the stretch distribution
+    sigmam : float
+        standard deviation for x1 < mu0
+    sigmap : float
+        standard deviation for x1 > mu0
+    """
+    def __init__(self, mu0, sigmam, sigmap):
+        self.mu0 = mu0
+        self.sigmam = sigmam
+        self.sigmap = sigmap
+
+    @classmethod
+    def from_survey(cls, survey_name):
+        """
+        Best-fit parameters from Table 4 of Nicolas et al. 2021.
+
+        Parameters
+        ----------
+        survey_name : {'snfactory', 'sdss', 'ps1', 'snls', 'hst'}
+        """
+        name = survey_name.lower()
+        if name == 'snfactory':
+            mu0, sigmam, sigmap = 0.68, 1.34, 0.41
+        elif name == 'sdss':
+            mu0, sigmam, sigmap = 0.72, 1.31, 0.42
+        elif name == 'ps1':
+            mu0, sigmam, sigmap = 0.38, 1.01, 0.52
+        elif name == 'snls':
+            mu0, sigmam, sigmap = 1.22, 1.41, 0.15
+        elif name == 'hst':
+            mu0, sigmam, sigmap = 0.11, 0.76, 0.79
+        else:
+            raise NotImplementedError(f'survey_name {survey_name} not implemented')
+        return cls(mu0, sigmam, sigmap)
+
+    def pdf(self, x1):
+        """
+        Evaluate the pdf of the asymmetric stretch distribution at `x1`.
+        """
+        return double_gaussian_pdf(x1, self.mu0, self.sigmam, self.sigmap)
+
+    def sample(self, size, rng=None):
+        """
+        Draw stretch samples from the asymmetric distribution.
+
+        Parameters
+        ----------
+        size : int
+            number of samples requested
+        rng : `np.random.RandomState`, defaults to `None`
+            if `None`, a new `np.random.RandomState` is created and the
+            draw is not reproducible across calls.
+        """
+        if rng is None:
+            rng = np.random.RandomState()
+        return double_gaussian(mode=self.mu0, sigmam=self.sigmam,
+                               sigmap=self.sigmap, size=size, rng=rng)
